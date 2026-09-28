@@ -1,0 +1,14 @@
+{
+  "name": "timed-chat",
+  "version": "1.0.0",
+  "description": "10\ubd84 \uc2dc\uac04 \uc81c\ud55c 1:1 \ucc44\ud305",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "cert": "openssl req -x509 -newkey rsa:2048 -nodes -keyout certs/key.pem -out certs/cert.pem -days 365 -subj /CN=localhost"
+  },
+  "dependencies": {
+    "express": "^4.19.2",
+    "socket.io": "^4.7.5"
+  }
+}

@@ -1,0 +1,232 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>10분 대화</title>
+<style>
+  :root {
+    --bg: #e9eef3; --card: #fff; --ink: #16222f; --sub: #5d6b7a;
+    --accent: #1f5f8b; --warn: #b5432a; --bubble: #e4eaf0; --line: #d3dbe3;
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    background: var(--bg); color: var(--ink);
+    font-family: "Pretendard", "Noto Sans KR", "Malgun Gothic", system-ui, sans-serif;
+    display: flex; justify-content: center; padding: 16px;
+  }
+  main { width: 100%; max-width: 440px; display: flex; flex-direction: column; gap: 12px; }
+  section { background: var(--card); border-radius: 14px; padding: 24px; }
+  h1 { font-size: 22px; margin: 0 0 8px; }
+  p { margin: 0 0 16px; color: var(--sub); line-height: 1.5; }
+  input, button { font: inherit; }
+  input[type=text] {
+    width: 100%; padding: 12px; border: 1px solid var(--line); border-radius: 8px; margin-bottom: 12px;
+  }
+  button {
+    padding: 12px 16px; border: 0; border-radius: 8px; cursor: pointer;
+    background: var(--accent); color: #fff; width: 100%;
+  }
+  button.ghost { background: transparent; color: var(--accent); border: 1px solid var(--accent); }
+  button.no { background: #6b7784; }
+  button:focus-visible, input:focus-visible { outline: 3px solid #7fb2d6; outline-offset: 2px; }
+  .row { display: flex; gap: 8px; }
+  .err { color: var(--warn); min-height: 20px; margin: 0 0 8px; }
+
+  #chat { display: flex; flex-direction: column; height: calc(100vh - 32px - 60px); min-height: 380px; padding: 0; }
+  .head { display: flex; justify-content: space-between; align-items: center; padding: 14px 18px; border-bottom: 1px solid var(--line); }
+  #partner { font-weight: 600; }
+  #timer { font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  #timer.warn { color: var(--warn); }
+  #msgs { flex: 1; overflow-y: auto; padding: 16px; display: flex; flex-direction: column; gap: 8px; }
+  .msg { max-width: 78%; padding: 9px 13px; border-radius: 14px; background: var(--bubble); align-self: flex-start; overflow-wrap: anywhere; }
+  .msg.me { background: var(--accent); color: #fff; align-self: flex-end; }
+  .msg.sys { background: none; color: var(--sub); align-self: center; font-size: 13px; }
+  #send { display: flex; gap: 8px; padding: 12px; border-top: 1px solid var(--line); }
+  #send input { margin: 0; flex: 1; }
+  #send button { width: auto; }
+
+  #friendList { margin: 0 0 16px; padding-left: 18px; color: var(--sub); }
+  details { background: var(--card); border-radius: 14px; padding: 12px 18px; font-size: 14px; }
+  summary { cursor: pointer; font-weight: 600; }
+  dl { margin: 12px 0 0; display: grid; grid-template-columns: 96px 1fr; gap: 6px 10px; }
+  dt { color: var(--sub); } dd { margin: 0; overflow-wrap: anywhere; }
+</style>
+</head>
+<body>
+<main>
+  <section id="login">
+    <h1>10분만 이야기해요</h1>
+    <p>낯선 사람과 10분 동안 대화하고, 서로 마음에 들면 친구가 돼요.</p>
+    <input id="nick" type="text" maxlength="12" placeholder="닉네임 (12자 이내)" autocomplete="off">
+    <div class="err" id="loginErr"></div>
+    <button id="loginBtn">시작하기</button>
+  </section>
+
+  <section id="wait" hidden>
+    <h1>상대를 찾는 중</h1>
+    <p>다른 사람이 들어오면 바로 연결돼요.</p>
+    <button class="ghost" id="cancelBtn">취소</button>
+  </section>
+
+  <section id="chat" hidden>
+    <div class="head"><span id="partner"></span><span id="timer">10:00</span></div>
+    <div id="msgs" aria-live="polite"></div>
+    <form id="send"><input id="text" type="text" maxlength="500" placeholder="메시지 입력" autocomplete="off"><button>보내기</button></form>
+  </section>
+
+  <section id="choice" hidden>
+    <h1>시간이 끝났어요</h1>
+    <p id="choiceMsg">30초 안에 선택해 주세요. 둘 다 마음에 들어야 친구가 돼요.</p>
+    <div class="row">
+      <button id="likeBtn">마음에 들어요</button>
+      <button id="dislikeBtn" class="no">별로예요</button>
+    </div>
+  </section>
+
+  <section id="result" hidden>
+    <h1 id="resultTitle"></h1>
+    <p id="resultMsg"></p>
+    <ul id="friendList"></ul>
+    <button id="againBtn">새 상대 찾기</button>
+  </section>
+
+  <details id="osi">
+    <summary>통신 정보 (OSI 7계층)</summary>
+    <dl id="osiList"></dl>
+  </details>
+</main>
+
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const $ = (s) => document.querySelector(s);
+const socket = io();
+const screens = ["login", "wait", "chat", "choice", "result"];
+const show = (name) => screens.forEach((s) => ($("#" + s).hidden = s !== name));
+
+let offset = 0, endsAt = 0, tick = null, serverInfo = { interfaces: [] };
+
+// ----- 타이머 (서버 시각 기준으로 보정) -----
+function renderTimer() {
+  const left = Math.max(0, Math.ceil((endsAt - (Date.now() + offset)) / 1000));
+  const m = String(Math.floor(left / 60)).padStart(2, "0");
+  const s = String(left % 60).padStart(2, "0");
+  $("#timer").textContent = `${m}:${s}`;
+  $("#timer").classList.toggle("warn", left <= 60);
+}
+function startTimer(end, serverNow) {
+  offset = serverNow - Date.now();
+  endsAt = end;
+  clearInterval(tick);
+  tick = setInterval(renderTimer, 250);
+  renderTimer();
+}
+
+function addMsg(text, cls) {
+  const d = document.createElement("div");
+  d.className = "msg " + (cls || "");
+  d.textContent = text; // textContent로 넣어 XSS 방지
+  $("#msgs").appendChild(d);
+  $("#msgs").scrollTop = $("#msgs").scrollHeight;
+}
+
+// ----- 로그인 / 매칭 -----
+function login() {
+  socket.emit("login", $("#nick").value, (res) => {
+    if (!res.ok) return ($("#loginErr").textContent = res.error);
+    $("#loginErr").textContent = "";
+    socket.emit("find");
+  });
+}
+$("#loginBtn").onclick = login;
+$("#nick").addEventListener("keydown", (e) => e.key === "Enter" && login());
+$("#cancelBtn").onclick = () => { socket.emit("cancel"); show("login"); };
+$("#againBtn").onclick = () => { socket.emit("find"); };
+
+socket.on("waiting", () => show("wait"));
+socket.on("matched", ({ partner, endsAt, now }) => {
+  $("#msgs").innerHTML = "";
+  $("#partner").textContent = partner;
+  addMsg(`${partner}님과 연결됐어요`, "sys");
+  show("chat");
+  startTimer(endsAt, now);
+  $("#text").focus();
+});
+
+// ----- 채팅 -----
+$("#send").addEventListener("submit", (e) => {
+  e.preventDefault();
+  const t = $("#text").value.trim();
+  if (!t) return;
+  socket.emit("message", t);
+  addMsg(t, "me");
+  $("#text").value = "";
+});
+socket.on("message", ({ text }) => addMsg(text));
+
+// ----- 선택 / 결과 -----
+socket.on("time_up", () => {
+  clearInterval(tick);
+  $("#choiceMsg").textContent = "30초 안에 선택해 주세요. 둘 다 마음에 들어야 친구가 돼요.";
+  $("#likeBtn").disabled = $("#dislikeBtn").disabled = false;
+  show("choice");
+});
+function choose(like) {
+  socket.emit("choice", like);
+  $("#likeBtn").disabled = $("#dislikeBtn").disabled = true;
+  $("#choiceMsg").textContent = "상대의 선택을 기다리는 중이에요.";
+}
+$("#likeBtn").onclick = () => choose(true);
+$("#dislikeBtn").onclick = () => choose(false);
+
+function showFriends() {
+  socket.emit("friends", (list) => {
+    $("#friendList").innerHTML = "";
+    for (const f of list) {
+      const li = document.createElement("li");
+      li.textContent = f;
+      $("#friendList").appendChild(li);
+    }
+  });
+}
+socket.on("result", ({ friend, partner }) => {
+  $("#resultTitle").textContent = friend ? `${partner}님과 친구가 됐어요` : "이번에는 인연이 아니었어요";
+  $("#resultMsg").textContent = friend ? "내 친구 목록" : "다시 새로운 상대를 만나 보세요.";
+  showFriends();
+  show("result");
+});
+socket.on("partner_left", () => {
+  clearInterval(tick);
+  $("#resultTitle").textContent = "상대가 나갔어요";
+  $("#resultMsg").textContent = "연결이 끊겨서 대화가 종료됐어요.";
+  $("#friendList").innerHTML = "";
+  show("result");
+});
+
+// ----- OSI 7계층 정보 패널 -----
+function renderOsi() {
+  const tr = socket.io.engine ? socket.io.engine.transport.name : "-";
+  const secure = location.protocol === "https:";
+  const nics = serverInfo.interfaces.map((i) => `${i.name} ${i.mac}`).join(", ") || "-";
+  const rows = [
+    ["7 응용", "Socket.IO 이벤트 (login, find, message, choice)"],
+    ["6 표현", "JSON + UTF-8, " + (secure ? "TLS 암호화(wss)" : "암호화 없음(ws)")],
+    ["5 세션", `세션 ID ${socket.id || "-"}, 전송 ${tr}`],
+    ["4 전송", `TCP, 서버 포트 ${location.port || (secure ? 443 : 80)}`],
+    ["3 네트워크", `접속 주소 ${location.hostname}`],
+    ["2 데이터 링크", `서버 MAC: ${nics}`],
+    ["1 물리", location.hostname === "localhost" ? "루프백 (랜카드 미사용)" : "Wi-Fi 또는 랜선"],
+  ];
+  $("#osiList").innerHTML = rows.map(([k, v]) => `<dt>${k}</dt><dd></dd>`).join("");
+  $("#osiList").querySelectorAll("dd").forEach((dd, i) => (dd.textContent = rows[i][1]));
+}
+fetch("/info").then((r) => r.json()).then((j) => { serverInfo = j; renderOsi(); });
+socket.on("connect", () => {
+  renderOsi();
+  socket.io.engine.on("upgrade", renderOsi);
+});
+</script>
+</body>
+</html>
